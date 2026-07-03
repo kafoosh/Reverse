@@ -359,16 +359,17 @@ function stopPlayback() {
 
 function pickVideoMime() {
   if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
-  // Prefer WebM: Chrome's MP4 recorder writes broken duration metadata
-  // for canvas streams (players cut the video short). Safari doesn't
-  // record WebM, so it falls through to its native — and correct — MP4.
-  return [
-    'video/webm;codecs=vp9,opus',
-    'video/webm;codecs=vp8,opus',
-    'video/webm',
-    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-    'video/mp4',
-  ].find((m) => MediaRecorder.isTypeSupported(m)) || '';
+  const mp4 = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4'];
+  const webm = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  // Apple devices must get MP4: iOS Photos can't import WebM, so the
+  // share sheet never offers "Save Video" for it — and recent Safari
+  // records WebM, so it no longer falls through to MP4 on its own.
+  // Everything else prefers WebM because Chrome's MP4 recorder writes
+  // broken duration metadata for canvas streams (players cut the video
+  // short); Safari's native MP4 recorder doesn't have that bug.
+  const apple = /apple/i.test(navigator.vendor || '');
+  const order = apple ? mp4.concat(webm) : webm.concat(mp4);
+  return order.find((m) => MediaRecorder.isTypeSupported(m)) || '';
 }
 
 function randomId(len, alphabet) {
