@@ -65,7 +65,6 @@ const btnForward = $('btn-forward');
 const btnReverse = $('btn-reverse');
 const btnRedo = $('btn-redo');
 const btnRetake = $('btn-retake');
-const btnSave = $('btn-save');
 
 const MAX_SECONDS = 12;
 const CAPTURE_FPS = 15;
@@ -95,9 +94,6 @@ let playing = null;         // { src, raf }
 // Take 1: the trick words. Take 2+: decoy words again.
 let takeCount = 0;
 
-let savedBlob = null;       // rendered combined video, ready to share
-let rendering = false;
-
 // ============================================================
 // UI state machine: gate -> live -> recording -> processing -> review
 // ============================================================
@@ -125,7 +121,6 @@ function setState(state) {
   show(btnReverse, review);
   show(btnRedo, review);
   show(btnRetake, review);
-  show(btnSave, review);
 }
 
 function setStatus(msg) {
@@ -292,7 +287,6 @@ function releaseRecording() {
   frames = [];
   forwardBuffer = null;
   reverseBuffer = null;
-  savedBlob = null;
 }
 
 // ============================================================
@@ -316,7 +310,7 @@ function drawFrameAt(t) {
 }
 
 function playRecording(reverse) {
-  if (!forwardBuffer || rendering) return;
+  if (!forwardBuffer) return;
   stopPlayback();
   audioCtx.resume();
 
@@ -354,23 +348,8 @@ function stopPlayback() {
 }
 
 // ============================================================
-// Save video (forward + reverse in one clip)
+// Footer id (gate screen): random chars + "o" + the trick card
 // ============================================================
-
-function pickVideoMime() {
-  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
-  const mp4 = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4'];
-  const webm = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
-  // Apple devices must get MP4: iOS Photos can't import WebM, so the
-  // share sheet never offers "Save Video" for it — and recent Safari
-  // records WebM, so it no longer falls through to MP4 on its own.
-  // Everything else prefers WebM because Chrome's MP4 recorder writes
-  // broken duration metadata for canvas streams (players cut the video
-  // short); Safari's native MP4 recorder doesn't have that bug.
-  const apple = /apple/i.test(navigator.vendor || '');
-  const order = apple ? mp4.concat(webm) : webm.concat(mp4);
-  return order.find((m) => MediaRecorder.isTypeSupported(m)) || '';
-}
 
 function randomId(len, alphabet) {
   const chars = alphabet || 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -378,176 +357,6 @@ function randomId(len, alphabet) {
   for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
   return out;
 }
-
-function renderCombinedVideo() {
-  return new Promise((resolve, reject) => {
-    const w = playCanvas.width;
-    const h = playCanvas.height;
-    const rc = document.createElement('canvas');
-    rc.width = w;
-    rc.height = h;
-    const rctx = rc.getContext('2d');
-
-    const drawAt = (t) => {
-      const img = frames[frameIndexAt(t)].img;
-      if (!img) return;
-      if (recordedMirrored) {
-        rctx.save();
-        rctx.translate(w, 0);
-        rctx.scale(-1, 1);
-        rctx.drawImage(img, 0, 0, w, h);
-        rctx.restore();
-      } else {
-        rctx.drawImage(img, 0, 0, w, h);
-      }
-    };
-    drawAt(0);
-
-    const dest = audioCtx.createMediaStreamDestination();
-    const fwd = audioCtx.createBufferSource();
-    fwd.buffer = forwardBuffer;
-    fwd.connect(dest);
-    const rev = audioCtx.createBufferSource();
-    rev.buffer = reverseBuffer;
-    rev.connect(dest);
-
-    const mixed = new MediaStream([
-      ...rc.captureStream(30).getVideoTracks(),
-      ...dest.stream.getAudioTracks(),
-    ]);
-
-    const mime = pickVideoMime();
-    let rec;
-    try {
-      rec = new MediaRecorder(mixed, mime ? { mimeType: mime, videoBitsPerSecond: 2500000 } : undefined);
-    } catch (err) {
-      reject(err);
-      return;
-    }
-    const parts = [];
-    rec.ondataavailable = (e) => { if (e.data && e.data.size) parts.push(e.data); };
-    rec.onstop = () => resolve(new Blob(parts, { type: rec.mimeType || mime || 'video/webm' }));
-    rec.onerror = (e) => reject(e.error || new Error('Video render failed'));
-
-    const dur = forwardBuffer.duration;
-    // No timeslice: chunked ("fragmented") MP4 output reports only the
-    // first fragment's duration in some players, cutting the saved
-    // video short. A single final chunk muxes one consistent file.
-    rec.start();
-    const t0 = audioCtx.currentTime + 0.15;
-    fwd.start(t0);
-    rev.start(t0 + dur);
-
-    // Interval (not rAF) so rendering keeps going even if the tab
-    // is momentarily backgrounded.
-    const tick = setInterval(() => {
-      const el = audioCtx.currentTime - t0;
-      if (el >= 0) drawAt(el < dur ? Math.min(dur, el) : Math.max(0, dur - (el - dur)));
-    }, 1000 / 30);
-
-    // Stop only once the reverse pass has actually finished playing
-    // (plus a tail margin), so the file always contains the full
-    // forward + reverse audio. Guard timeout in case onended never fires.
-    let guard = 0;
-    let stopped = false;
-    const finish = () => {
-      if (stopped) return;
-      stopped = true;
-      clearTimeout(guard);
-      setTimeout(() => {
-        clearInterval(tick);
-        if (rec.state !== 'inactive') rec.stop();
-      }, 350);
-    };
-    rev.onended = finish;
-    guard = setTimeout(finish, (dur * 2 + 2) * 1000);
-  });
-}
-
-function videoFile(blob, name) {
-  // iOS matches share targets by MIME type, and a parameterised type
-  // like "video/mp4;codecs=avc1..." (what MediaRecorder reports back)
-  // isn't recognised as a video — the share sheet then offers "Save to
-  // Files" instead of "Save Video". Strip to the bare container type.
-  const type = (blob.type || '').split(';')[0].trim() || 'video/mp4';
-  return new File([blob], name, { type });
-}
-
-async function shareOrDownload(blob, name) {
-  const file = videoFile(blob, name);
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try {
-      await navigator.share({ files: [file] });
-      setStatus('');
-      return;
-    } catch (err) {
-      if (err && err.name === 'AbortError') { setStatus(''); return; }
-      // WebKit can leave a dismissed share "in progress" forever and
-      // reject every later call — fall back to a plain download so the
-      // save button always does something.
-      console.error(err);
-    }
-  }
-  downloadBlob(blob, name);
-  setStatus('');
-}
-
-async function saveVideo() {
-  if (!forwardBuffer || rendering) return;
-
-  const name = randomId(12) + (pickVideoMime().includes('mp4') ? '.mp4' : '.webm');
-
-  // Later taps: the rendered video is ready and each tap is a fresh
-  // user gesture, which the share sheet requires. Saving again is
-  // always allowed.
-  if (savedBlob) {
-    await shareOrDownload(savedBlob, name);
-    return;
-  }
-
-  rendering = true;
-  stopPlayback();
-  btnForward.disabled = true;
-  btnReverse.disabled = true;
-  btnSave.disabled = true;
-  audioCtx.resume();
-  const secs = Math.ceil(forwardBuffer.duration * 2);
-  setStatus(`Creating video… about ${secs}s`);
-
-  try {
-    savedBlob = await renderCombinedVideo();
-    const file = videoFile(savedBlob, name);
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      setStatus('Video ready — tap ⤓ to save');
-    } else {
-      downloadBlob(savedBlob, name);
-      setStatus('');
-    }
-  } catch (err) {
-    console.error(err);
-    setStatus('Could not create video');
-    setTimeout(() => setStatus(''), 2500);
-  } finally {
-    rendering = false;
-    btnForward.disabled = false;
-    btnReverse.disabled = false;
-    btnSave.disabled = false;
-  }
-}
-
-function downloadBlob(blob, name) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-}
-
-// ============================================================
-// Footer id (gate screen): random chars + "o" + the trick card
-// ============================================================
 
 function setFooter() {
   // 15 chars (no "o"), then "o" as the marker, then the card code.
@@ -589,10 +398,8 @@ btnShuffle.addEventListener('click', newPhrase);
 
 btnForward.addEventListener('click', () => playRecording(false));
 btnReverse.addEventListener('click', () => playRecording(true));
-btnSave.addEventListener('click', saveVideo);
 
 btnRetake.addEventListener('click', () => {
-  if (rendering) return;
   releaseRecording();
   newPhrase();
   setState('live');
@@ -601,7 +408,6 @@ btnRetake.addEventListener('click', () => {
 // Redo: discard the recording but keep the exact same words, and rewind
 // the take counter so the decoy/trick/decoy sequence isn't advanced.
 btnRedo.addEventListener('click', () => {
-  if (rendering) return;
   takeCount--;
   releaseRecording();
   setState('live');
