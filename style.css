@@ -145,12 +145,12 @@ button.side {
   transform: scale(0.55);
 }
 
-button.pill {
-  padding: 16px 22px;
+#controls button.pill {
+  padding: 14px 20px;
   border-radius: 999px;
-  font-size: 17px;
+  font-size: 13px;
   font-weight: 700;
-  min-width: 128px;
+  min-width: 104px;
 }
 
 #btn-reverse { background: #5e35b1; }
@@ -177,6 +177,18 @@ button:disabled { opacity: 0.4; }
 #gate h1 { font-size: 28px; }
 #gate p { opacity: 0.7; line-height: 1.5; }
 
+#gate-footer {
+  position: absolute;
+  bottom: calc(10px + env(safe-area-inset-bottom));
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  opacity: 0.22;
+  letter-spacing: 0.03em;
+}
+
 #btn-start {
   margin-top: 10px;
   padding: 16px 36px;
@@ -189,65 +201,3 @@ button:disabled { opacity: 0.4; }
   cursor: pointer;
 }
 
-/* ---------- hidden card picker ---------- */
-
-#picker {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.75);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 30;
-}
-
-#picker-box {
-  background: #16161d;
-  border-radius: 16px;
-  padding: 18px;
-  width: min(92vw, 420px);
-  max-height: 86dvh;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-#picker-box h2 { font-size: 18px; text-align: center; }
-
-#picker-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
-}
-
-#picker-grid button {
-  padding: 9px 2px;
-  border: none;
-  border-radius: 8px;
-  background: #24242e;
-  color: #f2f2f5;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-#picker-grid button.red { color: #ff6b6b; }
-
-#picker-grid button.selected,
-#picker-random.selected {
-  outline: 2px solid #ffd60a;
-}
-
-#picker-random, #picker-close {
-  padding: 12px;
-  border: none;
-  border-radius: 10px;
-  background: #24242e;
-  color: #f2f2f5;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-#picker-close { background: #3a3a46; }
