@@ -293,7 +293,6 @@ function releaseRecording() {
   forwardBuffer = null;
   reverseBuffer = null;
   savedBlob = null;
-  btnSave.textContent = '⤓';
 }
 
 // ============================================================
@@ -464,20 +463,44 @@ function renderCombinedVideo() {
   });
 }
 
+function videoFile(blob, name) {
+  // iOS matches share targets by MIME type, and a parameterised type
+  // like "video/mp4;codecs=avc1..." (what MediaRecorder reports back)
+  // isn't recognised as a video — the share sheet then offers "Save to
+  // Files" instead of "Save Video". Strip to the bare container type.
+  const type = (blob.type || '').split(';')[0].trim() || 'video/mp4';
+  return new File([blob], name, { type });
+}
+
+async function shareOrDownload(blob, name) {
+  const file = videoFile(blob, name);
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file] });
+      setStatus('');
+      return;
+    } catch (err) {
+      if (err && err.name === 'AbortError') { setStatus(''); return; }
+      // WebKit can leave a dismissed share "in progress" forever and
+      // reject every later call — fall back to a plain download so the
+      // save button always does something.
+      console.error(err);
+    }
+  }
+  downloadBlob(blob, name);
+  setStatus('');
+}
+
 async function saveVideo() {
   if (!forwardBuffer || rendering) return;
 
   const name = randomId(12) + (pickVideoMime().includes('mp4') ? '.mp4' : '.webm');
 
-  // Second tap: the rendered video is ready and this tap is a fresh
-  // user gesture, which the share sheet requires.
+  // Later taps: the rendered video is ready and each tap is a fresh
+  // user gesture, which the share sheet requires. Saving again is
+  // always allowed.
   if (savedBlob) {
-    const file = new File([savedBlob], name, { type: savedBlob.type });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      try { await navigator.share({ files: [file] }); } catch (_) { /* user cancelled */ }
-    } else {
-      downloadBlob(savedBlob, name);
-    }
+    await shareOrDownload(savedBlob, name);
     return;
   }
 
@@ -492,10 +515,9 @@ async function saveVideo() {
 
   try {
     savedBlob = await renderCombinedVideo();
-    const file = new File([savedBlob], name, { type: savedBlob.type });
+    const file = videoFile(savedBlob, name);
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       setStatus('Video ready — tap ⤓ to save');
-      btnSave.textContent = '⤓';
     } else {
       downloadBlob(savedBlob, name);
       setStatus('');
