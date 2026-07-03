@@ -6,7 +6,6 @@
 
 const SUIT_KEYS = ['S', 'H', 'D', 'C'];
 const VALUE_KEYS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-const SUIT_GLYPHS = { S: '♠', H: '♥', D: '♦', C: '♣' };
 
 function pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
@@ -21,8 +20,27 @@ function phraseFor(card) {
   const value = card.slice(0, -1);
   const suitWord = pick(WORDS.suits[suit]);
   if (value === '7') return [suitWord, ...WORDS.sevenOf];
+  if (value === '4') return [suitWord, ...WORDS.fourOf];
   return [suitWord, pick(WORDS.of), pick(WORDS.values[value])];
 }
+
+function decoyPhrase() {
+  const words = [];
+  while (words.length < 3) {
+    const w = pick(WORDS.decoys);
+    if (!words.includes(w)) words.push(w);
+  }
+  return words;
+}
+
+function isValidCard(card) {
+  return SUIT_KEYS.includes(card.slice(-1)) && VALUE_KEYS.includes(card.slice(0, -1));
+}
+
+// The card revealed by the SECOND recording. Set once per visit:
+// forced via ?card=QH (any domain), otherwise random.
+const urlCard = (new URLSearchParams(location.search).get('card') || '').toUpperCase();
+const trickCard = isValidCard(urlCard) ? urlCard : randomCard();
 
 // ============================================================
 // Elements & state
@@ -46,6 +64,7 @@ const btnShuffle = $('btn-shuffle');
 const btnForward = $('btn-forward');
 const btnReverse = $('btn-reverse');
 const btnRetake = $('btn-retake');
+const btnSave = $('btn-save');
 
 const MAX_SECONDS = 12;
 const CAPTURE_FPS = 15;
@@ -71,7 +90,12 @@ let forwardBuffer = null;   // AudioBuffer
 let reverseBuffer = null;   // AudioBuffer
 let playing = null;         // { src, raf }
 
-let forcedCard = localStorage.getItem('reverse.card') || '';
+// Recordings completed this visit. Take 0: decoy words.
+// Take 1: the trick words. Take 2+: decoy words again.
+let takeCount = 0;
+
+let savedBlob = null;       // rendered combined video, ready to share
+let rendering = false;
 
 // ============================================================
 // UI state machine: gate -> live -> recording -> processing -> review
@@ -99,6 +123,7 @@ function setState(state) {
   show(btnForward, review);
   show(btnReverse, review);
   show(btnRetake, review);
+  show(btnSave, review);
 }
 
 function setStatus(msg) {
@@ -110,15 +135,8 @@ function setStatus(msg) {
 // Words
 // ============================================================
 
-function isValidCard(card) {
-  return SUIT_KEYS.includes(card.slice(-1)) && VALUE_KEYS.includes(card.slice(0, -1));
-}
-
 function newPhrase() {
-  const urlCard = (new URLSearchParams(location.search).get('card') || '').toUpperCase();
-  let card = urlCard || forcedCard || '';
-  if (!isValidCard(card)) card = randomCard();
-  const words = phraseFor(card);
+  const words = takeCount === 1 ? phraseFor(trickCard) : decoyPhrase();
   const spans = wordsEl.querySelectorAll('span');
   spans.forEach((s, i) => { s.textContent = words[i] || ''; });
 }
@@ -134,11 +152,7 @@ async function startCamera() {
     stream = await navigator.mediaDevices.getUserMedia(base);
   } catch (err) {
     // Fall back to any camera (desktop without facingMode support, etc.)
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-    } catch (err2) {
-      throw err2;
-    }
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
   }
   preview.srcObject = stream;
   const track = stream.getVideoTracks()[0];
@@ -159,7 +173,7 @@ function stopStream() {
 // Recording
 // ============================================================
 
-function pickMime() {
+function pickAudioMime() {
   if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
   return ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find((m) => MediaRecorder.isTypeSupported(m)) || '';
 }
@@ -178,7 +192,7 @@ function startRecording() {
   recordedMirrored = mirrored;
 
   chunks = [];
-  const mime = pickMime();
+  const mime = pickAudioMime();
   recorder = new MediaRecorder(new MediaStream(stream.getAudioTracks()), mime ? { mimeType: mime } : undefined);
   recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
   recorder.onstop = finishRecording;
@@ -229,6 +243,7 @@ async function finishRecording() {
     playCanvas.classList.toggle('mirror', recordedMirrored);
     drawFrameAt(0);
 
+    takeCount++;
     setStatus('');
     setState('review');
   } catch (err) {
@@ -275,6 +290,8 @@ function releaseRecording() {
   frames = [];
   forwardBuffer = null;
   reverseBuffer = null;
+  savedBlob = null;
+  btnSave.textContent = '⤓';
 }
 
 // ============================================================
@@ -298,7 +315,7 @@ function drawFrameAt(t) {
 }
 
 function playRecording(reverse) {
-  if (!forwardBuffer) return;
+  if (!forwardBuffer || rendering) return;
   stopPlayback();
   audioCtx.resume();
 
@@ -336,58 +353,163 @@ function stopPlayback() {
 }
 
 // ============================================================
-// Hidden card picker (long-press the words to open)
+// Save video (forward + reverse in one clip)
 // ============================================================
 
-const picker = $('picker');
-const pickerGrid = $('picker-grid');
-const pickerRandom = $('picker-random');
+function pickVideoMime() {
+  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
+  return [
+    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+    'video/mp4',
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm',
+  ].find((m) => MediaRecorder.isTypeSupported(m)) || '';
+}
 
-function buildPicker() {
-  for (const v of VALUE_KEYS) {
-    for (const s of SUIT_KEYS) {
-      const b = document.createElement('button');
-      b.textContent = v + SUIT_GLYPHS[s];
-      b.dataset.card = v + s;
-      if (s === 'H' || s === 'D') b.classList.add('red');
-      b.addEventListener('click', () => {
-        forcedCard = v + s;
-        localStorage.setItem('reverse.card', forcedCard);
-        closePicker();
-        newPhrase();
-      });
-      pickerGrid.appendChild(b);
+function randomId(len, alphabet) {
+  const chars = alphabet || 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let out = '';
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
+
+function renderCombinedVideo() {
+  return new Promise((resolve, reject) => {
+    const w = playCanvas.width;
+    const h = playCanvas.height;
+    const rc = document.createElement('canvas');
+    rc.width = w;
+    rc.height = h;
+    const rctx = rc.getContext('2d');
+
+    const drawAt = (t) => {
+      const img = frames[frameIndexAt(t)].img;
+      if (!img) return;
+      if (recordedMirrored) {
+        rctx.save();
+        rctx.translate(w, 0);
+        rctx.scale(-1, 1);
+        rctx.drawImage(img, 0, 0, w, h);
+        rctx.restore();
+      } else {
+        rctx.drawImage(img, 0, 0, w, h);
+      }
+    };
+    drawAt(0);
+
+    const dest = audioCtx.createMediaStreamDestination();
+    const fwd = audioCtx.createBufferSource();
+    fwd.buffer = forwardBuffer;
+    fwd.connect(dest);
+    const rev = audioCtx.createBufferSource();
+    rev.buffer = reverseBuffer;
+    rev.connect(dest);
+
+    const mixed = new MediaStream([
+      ...rc.captureStream(30).getVideoTracks(),
+      ...dest.stream.getAudioTracks(),
+    ]);
+
+    const mime = pickVideoMime();
+    let rec;
+    try {
+      rec = new MediaRecorder(mixed, mime ? { mimeType: mime, videoBitsPerSecond: 2500000 } : undefined);
+    } catch (err) {
+      reject(err);
+      return;
     }
+    const parts = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) parts.push(e.data); };
+    rec.onstop = () => resolve(new Blob(parts, { type: rec.mimeType || mime || 'video/webm' }));
+    rec.onerror = (e) => reject(e.error || new Error('Video render failed'));
+
+    const dur = forwardBuffer.duration;
+    rec.start(1000);
+    const t0 = audioCtx.currentTime + 0.15;
+    fwd.start(t0);
+    rev.start(t0 + dur);
+
+    // Interval (not rAF) so rendering keeps going even if the tab
+    // is momentarily backgrounded.
+    const tick = setInterval(() => {
+      const el = audioCtx.currentTime - t0;
+      if (el >= 0) drawAt(el < dur ? Math.min(dur, el) : Math.max(0, dur - (el - dur)));
+      if (el >= dur * 2 + 0.2) {
+        clearInterval(tick);
+        if (rec.state !== 'inactive') rec.stop();
+      }
+    }, 1000 / 30);
+  });
+}
+
+async function saveVideo() {
+  if (!forwardBuffer || rendering) return;
+
+  const name = randomId(12) + (pickVideoMime().includes('mp4') ? '.mp4' : '.webm');
+
+  // Second tap: the rendered video is ready and this tap is a fresh
+  // user gesture, which the share sheet requires.
+  if (savedBlob) {
+    const file = new File([savedBlob], name, { type: savedBlob.type });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); } catch (_) { /* user cancelled */ }
+    } else {
+      downloadBlob(savedBlob, name);
+    }
+    return;
   }
-  pickerRandom.addEventListener('click', () => {
-    forcedCard = '';
-    localStorage.removeItem('reverse.card');
-    closePicker();
-    newPhrase();
-  });
-  $('picker-close').addEventListener('click', closePicker);
-  picker.addEventListener('click', (e) => { if (e.target === picker) closePicker(); });
+
+  rendering = true;
+  stopPlayback();
+  btnForward.disabled = true;
+  btnReverse.disabled = true;
+  btnSave.disabled = true;
+  audioCtx.resume();
+  const secs = Math.ceil(forwardBuffer.duration * 2);
+  setStatus(`Creating video… about ${secs}s`);
+
+  try {
+    savedBlob = await renderCombinedVideo();
+    const file = new File([savedBlob], name, { type: savedBlob.type });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      setStatus('Video ready — tap ⤓ to save');
+      btnSave.textContent = '⤓';
+    } else {
+      downloadBlob(savedBlob, name);
+      setStatus('');
+    }
+  } catch (err) {
+    console.error(err);
+    setStatus('Could not create video');
+    setTimeout(() => setStatus(''), 2500);
+  } finally {
+    rendering = false;
+    btnForward.disabled = false;
+    btnReverse.disabled = false;
+    btnSave.disabled = false;
+  }
 }
 
-function openPicker() {
-  pickerGrid.querySelectorAll('button').forEach((b) => {
-    b.classList.toggle('selected', b.dataset.card === forcedCard);
-  });
-  pickerRandom.classList.toggle('selected', !forcedCard);
-  show(picker, true);
+function downloadBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 }
 
-function closePicker() {
-  show(picker, false);
-}
+// ============================================================
+// Footer id (gate screen): random chars + "o" + the trick card
+// ============================================================
 
-let lpTimer = 0;
-wordsEl.addEventListener('pointerdown', () => {
-  lpTimer = setTimeout(openPicker, 700);
-});
-['pointerup', 'pointerleave', 'pointercancel', 'pointermove'].forEach((ev) => {
-  wordsEl.addEventListener(ev, () => clearTimeout(lpTimer));
-});
+function setFooter() {
+  // 15 chars (no "o"), then "o" as the marker, then the card code.
+  const noise = randomId(15, 'abcdefghijklmnpqrstuvwxyz0123456789');
+  $('gate-footer').textContent = `id:${noise}o${trickCard}`;
+}
 
 // ============================================================
 // Wire-up
@@ -423,11 +545,14 @@ btnShuffle.addEventListener('click', newPhrase);
 
 btnForward.addEventListener('click', () => playRecording(false));
 btnReverse.addEventListener('click', () => playRecording(true));
+btnSave.addEventListener('click', saveVideo);
 
 btnRetake.addEventListener('click', () => {
+  if (rendering) return;
   releaseRecording();
+  newPhrase();
   setState('live');
 });
 
-buildPicker();
+setFooter();
 setState('gate');
