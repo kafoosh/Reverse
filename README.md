@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/29633695/README.md)
 # Reverse — a magic trick web app
 
 A spectator records themselves on camera saying a few "random" words. Played
