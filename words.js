@@ -17,7 +17,7 @@ const WORDS = {
   values: {
     A:  ['Said'],
     2:  ['Hoot'],
-    3:  ['Earth'],
+    3:  ['Youth'],
     4:  ['Off'],
     5:  ['Fear'],
     6:  ['Kiss'],
