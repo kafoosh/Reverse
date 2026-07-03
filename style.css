@@ -100,7 +100,7 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 14px;
+  gap: 12px;
   padding: 18px max(16px, env(safe-area-inset-right))
            calc(18px + env(safe-area-inset-bottom))
            max(16px, env(safe-area-inset-left));
@@ -116,8 +116,8 @@ html, body {
 }
 
 button.side {
-  width: 52px;
-  height: 52px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   flex: none;
 }
@@ -150,17 +150,37 @@ button.side {
 #controls button.pill {
   flex: 1 1 0;
   min-width: 0;
-  max-width: 160px;
-  height: 52px;
+  max-width: 150px;
+  height: 48px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 0 14px;
+  padding: 0 12px;
   border-radius: 999px;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
   white-space: nowrap;
+}
+
+#controls button.pill i {
+  font-style: normal;
+  font-size: 12px;
+}
+
+/* Narrow phones: 5 review buttons need every pixel. */
+@media (max-width: 399px) {
+  #controls button.pill i { display: none; }
+}
+
+@media (max-width: 359px) {
+  #controls { gap: 8px; }
+  button.side { width: 44px; height: 44px; }
+  #controls button.pill {
+    height: 44px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
 }
 
 #btn-reverse { background: #5e35b1; }

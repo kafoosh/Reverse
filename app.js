@@ -63,6 +63,7 @@ const btnFlip = $('btn-flip');
 const btnShuffle = $('btn-shuffle');
 const btnForward = $('btn-forward');
 const btnReverse = $('btn-reverse');
+const btnRedo = $('btn-redo');
 const btnRetake = $('btn-retake');
 const btnSave = $('btn-save');
 
@@ -122,6 +123,7 @@ function setState(state) {
   show(btnShuffle, live);
   show(btnForward, review);
   show(btnReverse, review);
+  show(btnRedo, review);
   show(btnRetake, review);
   show(btnSave, review);
 }
@@ -358,12 +360,15 @@ function stopPlayback() {
 
 function pickVideoMime() {
   if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
+  // Prefer WebM: Chrome's MP4 recorder writes broken duration metadata
+  // for canvas streams (players cut the video short). Safari doesn't
+  // record WebM, so it falls through to its native — and correct — MP4.
   return [
-    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-    'video/mp4',
     'video/webm;codecs=vp9,opus',
     'video/webm;codecs=vp8,opus',
     'video/webm',
+    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+    'video/mp4',
   ].find((m) => MediaRecorder.isTypeSupported(m)) || '';
 }
 
@@ -425,7 +430,10 @@ function renderCombinedVideo() {
     rec.onerror = (e) => reject(e.error || new Error('Video render failed'));
 
     const dur = forwardBuffer.duration;
-    rec.start(1000);
+    // No timeslice: chunked ("fragmented") MP4 output reports only the
+    // first fragment's duration in some players, cutting the saved
+    // video short. A single final chunk muxes one consistent file.
+    rec.start();
     const t0 = audioCtx.currentTime + 0.15;
     fwd.start(t0);
     rev.start(t0 + dur);
@@ -435,11 +443,24 @@ function renderCombinedVideo() {
     const tick = setInterval(() => {
       const el = audioCtx.currentTime - t0;
       if (el >= 0) drawAt(el < dur ? Math.min(dur, el) : Math.max(0, dur - (el - dur)));
-      if (el >= dur * 2 + 0.2) {
+    }, 1000 / 30);
+
+    // Stop only once the reverse pass has actually finished playing
+    // (plus a tail margin), so the file always contains the full
+    // forward + reverse audio. Guard timeout in case onended never fires.
+    let guard = 0;
+    let stopped = false;
+    const finish = () => {
+      if (stopped) return;
+      stopped = true;
+      clearTimeout(guard);
+      setTimeout(() => {
         clearInterval(tick);
         if (rec.state !== 'inactive') rec.stop();
-      }
-    }, 1000 / 30);
+      }, 350);
+    };
+    rev.onended = finish;
+    guard = setTimeout(finish, (dur * 2 + 2) * 1000);
   });
 }
 
@@ -551,6 +572,15 @@ btnRetake.addEventListener('click', () => {
   if (rendering) return;
   releaseRecording();
   newPhrase();
+  setState('live');
+});
+
+// Redo: discard the recording but keep the exact same words, and rewind
+// the take counter so the decoy/trick/decoy sequence isn't advanced.
+btnRedo.addEventListener('click', () => {
+  if (rendering) return;
+  takeCount--;
+  releaseRecording();
   setState('live');
 });
 
