@@ -69,6 +69,7 @@ const btnRetake = $('btn-retake');
 const MAX_SECONDS = 12;
 const CAPTURE_FPS = 15;
 const CAPTURE_MAX_SIDE = 480;
+const PLAYBACK_GAIN = 2; // recordings tend to be quiet, so boost playback
 
 let stream = null;
 let facing = 'user';
@@ -316,7 +317,10 @@ function playRecording(reverse) {
 
   const src = audioCtx.createBufferSource();
   src.buffer = reverse ? reverseBuffer : forwardBuffer;
-  src.connect(audioCtx.destination);
+  const gain = audioCtx.createGain();
+  gain.gain.value = PLAYBACK_GAIN;
+  src.connect(gain);
+  gain.connect(audioCtx.destination);
 
   const dur = forwardBuffer.duration;
   const t0 = audioCtx.currentTime;
